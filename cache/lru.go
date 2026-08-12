@@ -1,0 +1,201 @@
+package cache
+
+import (
+	"context"
+	"math"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	hashicorp "github.com/hashicorp/golang-lru/v2"
+)
+
+const (
+	// DefaultMemoryCacheSweepInterval is the default interval for sweeping expired items from the cache.
+	DefaultMemoryCacheSweepInterval = time.Minute * 5
+	// DefaultLRUCacheMemory for LRUCacheMemoryStore
+	DefaultLRUCacheMemory = 1024 * 1024 * 256 // 256MB
+	// DefaultLRUCacheSize for LRUCacheMemoryStore
+	DefaultLRUCacheSize = 1000
+)
+
+type lruCache[V any] struct {
+	data          V
+	cacheDuration time.Duration
+	startTime     time.Time
+	memorySize    int64
+}
+
+// NewLRUCache new lru cache instance
+func NewLRUCache[V any](data V, cacheDuration time.Duration) *lruCache[V] {
+	lc := &lruCache[V]{data: data, cacheDuration: cacheDuration, startTime: time.Now()}
+
+	return lc
+}
+
+// isExpired whether the cache data expires
+func (l *lruCache[V]) IsExpired() bool {
+	if l.cacheDuration <= 0 {
+		return false
+	}
+	return time.Now().After(l.startTime.Add(l.cacheDuration))
+}
+
+// LRUStore is a thread-safe LRU cache implementation that supports expiration and memory size limits.
+type LRUStore[K comparable, V any] struct {
+	store *hashicorp.Cache[K, *lruCache[V]]
+	// maximumMemory Maximum Memory byte size of the cache
+	maximumMemory int64 // 0 = unlimited bytes
+	// sizeOf computes memory usage for each key/value entry.
+	sizeOf func(key K, value V) int64
+	// sweepInterval controls how often expired entries are removed.
+	sweepInterval time.Duration
+	// onEvict callback when an entry is evicted.
+	OnEvict func(key K, value V, reason EvictionReason)
+	// currentMemory Memory used by the cache
+	currentMemory int64
+	// mu mutex for synchronizing access to the cache
+	mu sync.Mutex
+	// evictionReason holds the eviction reason for keys about to be removed so the evict callback can read the correct reason.
+	evictionReason sync.Map
+}
+
+// NewLRUStore creates a new LRUStore with the given options.
+func NewLRUStore[K comparable, V any](ctx context.Context, opts Options[K, V]) (*LRUStore[K, V], error) {
+	if opts.MaxSize <= 0 {
+		// 0 = unlimited count: use the largest possible size so that only
+		// the byte budget (MaxBytes) drives eviction.
+		opts.MaxSize = math.MaxInt
+	}
+
+	if opts.MaxBytes < 0 {
+		opts.MaxBytes = 0
+	}
+
+	if opts.SizeOf == nil {
+		opts.SizeOf = func(_ K, _ V) int64 { return 0 }
+	}
+
+	if opts.SweepInterval <= 0 {
+		opts.SweepInterval = DefaultMemoryCacheSweepInterval
+	}
+
+	lc := &LRUStore[K, V]{
+		maximumMemory: opts.MaxBytes,
+		sizeOf:        opts.SizeOf,
+		sweepInterval: opts.SweepInterval,
+		OnEvict:       opts.OnEvict,
+		currentMemory: 0,
+	}
+
+	lru, err := hashicorp.NewWithEvict(opts.MaxSize, func(key K, value *lruCache[V]) {
+		if value != nil && opts.MaxBytes != 0 {
+			atomic.AddInt64(&lc.currentMemory, -value.memorySize)
+		}
+		if lc.OnEvict != nil && value != nil {
+			reason := EvictCapacity
+			if r, ok := lc.evictionReason.LoadAndDelete(key); ok {
+				reason = r.(EvictionReason)
+			}
+			lc.OnEvict(key, value.data, reason)
+		}
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	lc.store = lru
+
+	go lc.run(ctx)
+
+	return lc, nil
+
+}
+
+// run starts a goroutine that periodically sweeps the cache for expired items.
+func (l *LRUStore[K, V]) run(ctx context.Context) {
+	ticker := time.NewTicker(l.sweepInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			for _, key := range l.store.Keys() {
+				val, ok := l.store.Peek(key)
+				if ok && val != nil && val.IsExpired() {
+					l.evictionReason.Store(key, EvictTTL)
+					l.store.Remove(key)
+				}
+			}
+
+		}
+	}
+}
+
+// Get retrieves a value from the cache by key.
+func (l *LRUStore[K, V]) Get(key K) (value V, found bool) {
+	lc, ok := l.store.Get(key)
+
+	if !ok {
+		return
+	}
+
+	if lc.IsExpired() {
+		l.evictionReason.Store(key, EvictTTL)
+		l.store.Remove(key)
+		return
+	}
+
+	return lc.data, true
+}
+
+// Put adds a value to the cache with the specified key and expiration time.
+func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	lc := NewLRUCache(value, cacheDuration)
+
+	if l.maximumMemory != 0 && l.sizeOf(key, value) > l.maximumMemory {
+		return
+	}
+
+	if prevValue, ok := l.store.Peek(key); ok && prevValue != nil {
+		l.store.Remove(key)
+	}
+
+	if l.maximumMemory != 0 {
+		lc.memorySize = l.sizeOf(key, value)
+		for atomic.LoadInt64(&l.currentMemory)+lc.memorySize > l.maximumMemory {
+			if oldestKey, _, ok := l.store.GetOldest(); ok {
+				l.evictionReason.Store(oldestKey, EvictCapacity)
+			}
+			_, _, ok := l.store.RemoveOldest()
+			if !ok {
+				// If there is nothing left to evict, refuse the write.
+				return
+			}
+		}
+		atomic.AddInt64(&l.currentMemory, lc.memorySize)
+	}
+
+	l.store.Add(key, lc)
+
+}
+
+// Delete removes a value from the cache by key.
+func (l *LRUStore[K, V]) Delete(key K) {
+	l.store.Remove(key)
+}
+
+// CurrentBytes returns the current memory usage of the cache in bytes.
+func (l *LRUStore[K, V]) CurrentBytes() int64 {
+	return atomic.LoadInt64(&l.currentMemory)
+}
+
+// Purge removes all items from the cache.
+func (l *LRUStore[K, V]) Purge() {
+	l.store.Purge()
+}
