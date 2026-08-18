@@ -36,6 +36,8 @@ const (
 	EvictCapacity EvictionReason = "capacity"
 	// EvictTTL indicates that the item was evicted due to exceeding its time-to-live (TTL).
 	EvictTTL EvictionReason = "TTL"
+	// EvictReplace indicates that the item was evicted due to being replaced by a new value.
+	EvictReplace EvictionReason = "replace"
 )
 
 // Options struct defines the configuration options for the LRU cache.

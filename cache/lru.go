@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -20,15 +21,16 @@ const (
 )
 
 type lruCache[V any] struct {
-	data          V
-	cacheDuration time.Duration
-	startTime     time.Time
-	memorySize    int64
+	data           V
+	cacheDuration  time.Duration
+	startTime      time.Time
+	memorySize     int64
+	evictionReason EvictionReason
 }
 
 // NewLRUCache new lru cache instance
 func NewLRUCache[V any](data V, cacheDuration time.Duration) *lruCache[V] {
-	lc := &lruCache[V]{data: data, cacheDuration: cacheDuration, startTime: time.Now()}
+	lc := &lruCache[V]{data: data, cacheDuration: cacheDuration, startTime: time.Now(), evictionReason: EvictCapacity}
 
 	return lc
 }
@@ -56,8 +58,6 @@ type LRUStore[K comparable, V any] struct {
 	currentMemory int64
 	// mu mutex for synchronizing access to the cache
 	mu sync.Mutex
-	// evictionReason holds the eviction reason for keys about to be removed so the evict callback can read the correct reason.
-	evictionReason sync.Map
 }
 
 // NewLRUStore creates a new LRUStore with the given options.
@@ -72,8 +72,8 @@ func NewLRUStore[K comparable, V any](ctx context.Context, opts Options[K, V]) (
 		opts.MaxBytes = 0
 	}
 
-	if opts.SizeOf == nil {
-		opts.SizeOf = func(_ K, _ V) int64 { return 0 }
+	if opts.MaxBytes > 0 && opts.SizeOf == nil {
+		return nil, fmt.Errorf("SizeOf function must be provided when MaxBytes is greater than 0")
 	}
 
 	if opts.SweepInterval <= 0 {
@@ -93,11 +93,7 @@ func NewLRUStore[K comparable, V any](ctx context.Context, opts Options[K, V]) (
 			atomic.AddInt64(&lc.currentMemory, -value.memorySize)
 		}
 		if lc.OnEvict != nil && value != nil {
-			reason := EvictCapacity
-			if r, ok := lc.evictionReason.LoadAndDelete(key); ok {
-				reason = r.(EvictionReason)
-			}
-			lc.OnEvict(key, value.data, reason)
+			lc.OnEvict(key, value.data, value.evictionReason)
 		}
 	})
 
@@ -123,13 +119,15 @@ func (l *LRUStore[K, V]) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			l.mu.Lock()
 			for _, key := range l.store.Keys() {
 				val, ok := l.store.Peek(key)
 				if ok && val != nil && val.IsExpired() {
-					l.evictionReason.Store(key, EvictTTL)
+					val.evictionReason = EvictTTL
 					l.store.Remove(key)
 				}
 			}
+			l.mu.Unlock()
 
 		}
 	}
@@ -137,6 +135,8 @@ func (l *LRUStore[K, V]) run(ctx context.Context) {
 
 // Get retrieves a value from the cache by key.
 func (l *LRUStore[K, V]) Get(key K) (value V, found bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	lc, ok := l.store.Get(key)
 
 	if !ok {
@@ -144,7 +144,7 @@ func (l *LRUStore[K, V]) Get(key K) (value V, found bool) {
 	}
 
 	if lc.IsExpired() {
-		l.evictionReason.Store(key, EvictTTL)
+		lc.evictionReason = EvictTTL
 		l.store.Remove(key)
 		return
 	}
@@ -163,15 +163,13 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 	}
 
 	if prevValue, ok := l.store.Peek(key); ok && prevValue != nil {
+		prevValue.evictionReason = EvictReplace
 		l.store.Remove(key)
 	}
 
 	if l.maximumMemory != 0 {
 		lc.memorySize = l.sizeOf(key, value)
 		for atomic.LoadInt64(&l.currentMemory)+lc.memorySize > l.maximumMemory {
-			if oldestKey, _, ok := l.store.GetOldest(); ok {
-				l.evictionReason.Store(oldestKey, EvictCapacity)
-			}
 			_, _, ok := l.store.RemoveOldest()
 			if !ok {
 				// If there is nothing left to evict, refuse the write.
@@ -187,6 +185,8 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 
 // Delete removes a value from the cache by key.
 func (l *LRUStore[K, V]) Delete(key K) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.store.Remove(key)
 }
 
@@ -197,5 +197,7 @@ func (l *LRUStore[K, V]) CurrentBytes() int64 {
 
 // Purge removes all items from the cache.
 func (l *LRUStore[K, V]) Purge() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.store.Purge()
 }
