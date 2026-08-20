@@ -28,6 +28,11 @@ type lruCache[V any] struct {
 	evictionReason EvictionReason
 }
 
+type evictionEvent[K comparable, V any] struct {
+	key   K
+	value *lruCache[V]
+}
+
 // NewLRUCache new lru cache instance
 func NewLRUCache[V any](data V, cacheDuration time.Duration) *lruCache[V] {
 	lc := &lruCache[V]{data: data, cacheDuration: cacheDuration, startTime: time.Now(), evictionReason: EvictCapacity}
@@ -58,6 +63,8 @@ type LRUStore[K comparable, V any] struct {
 	currentMemory int64
 	// mu mutex for synchronizing access to the cache
 	mu sync.Mutex
+	// pendingEvicts holds the list of eviction events to be processed after releasing the lock
+	pendingEvicts []evictionEvent[K, V]
 }
 
 // NewLRUStore creates a new LRUStore with the given options.
@@ -89,11 +96,14 @@ func NewLRUStore[K comparable, V any](ctx context.Context, opts Options[K, V]) (
 	}
 
 	lru, err := hashicorp.NewWithEvict(opts.MaxSize, func(key K, value *lruCache[V]) {
-		if value != nil && opts.MaxBytes != 0 {
+		if value != nil {
 			atomic.AddInt64(&lc.currentMemory, -value.memorySize)
 		}
 		if lc.OnEvict != nil && value != nil {
-			lc.OnEvict(key, value.data, value.evictionReason)
+			lc.pendingEvicts = append(lc.pendingEvicts, evictionEvent[K, V]{
+				key:   key,
+				value: value,
+			})
 		}
 	})
 
@@ -127,8 +137,7 @@ func (l *LRUStore[K, V]) run(ctx context.Context) {
 					l.store.Remove(key)
 				}
 			}
-			l.mu.Unlock()
-
+			l.executeEviction()
 		}
 	}
 }
@@ -136,7 +145,7 @@ func (l *LRUStore[K, V]) run(ctx context.Context) {
 // Get retrieves a value from the cache by key.
 func (l *LRUStore[K, V]) Get(key K) (value V, found bool) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	defer l.executeEviction()
 	lc, ok := l.store.Get(key)
 
 	if !ok {
@@ -155,7 +164,7 @@ func (l *LRUStore[K, V]) Get(key K) (value V, found bool) {
 // Put adds a value to the cache with the specified key and expiration time.
 func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	defer l.executeEviction()
 	lc := NewLRUCache(value, cacheDuration)
 
 	if l.maximumMemory != 0 && l.sizeOf(key, value) > l.maximumMemory {
@@ -186,7 +195,7 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 // Delete removes a value from the cache by key.
 func (l *LRUStore[K, V]) Delete(key K) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	defer l.executeEviction()
 	l.store.Remove(key)
 }
 
@@ -198,6 +207,18 @@ func (l *LRUStore[K, V]) CurrentBytes() int64 {
 // Purge removes all items from the cache.
 func (l *LRUStore[K, V]) Purge() {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	defer l.executeEviction()
 	l.store.Purge()
+}
+
+func (l *LRUStore[K, V]) executeEviction() {
+	evicts := l.pendingEvicts
+	l.pendingEvicts = nil
+	l.mu.Unlock()
+
+	for _, evict := range evicts {
+		if l.OnEvict != nil && evict.value != nil {
+			l.OnEvict(evict.key, evict.value.data, evict.value.evictionReason)
+		}
+	}
 }
