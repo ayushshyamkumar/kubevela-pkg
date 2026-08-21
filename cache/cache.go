@@ -38,6 +38,10 @@ const (
 	EvictTTL EvictionReason = "TTL"
 	// EvictReplace indicates that the item was evicted due to being replaced by a new value.
 	EvictReplace EvictionReason = "replace"
+	// EvictDelete indicates that the item was evicted due to being explicitly deleted from the cache.
+	EvictDelete EvictionReason = "delete"
+	// EvictPurge indicates that the item was evicted due to a purge operation on the cache.
+	EvictPurge EvictionReason = "purge"
 )
 
 // Options struct defines the configuration options for the LRU cache.

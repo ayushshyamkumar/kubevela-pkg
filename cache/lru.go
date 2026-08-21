@@ -196,7 +196,10 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 func (l *LRUStore[K, V]) Delete(key K) {
 	l.mu.Lock()
 	defer l.executeEviction()
-	l.store.Remove(key)
+	if val, ok := l.store.Peek(key); ok && val != nil {
+		val.evictionReason = EvictDelete
+		l.store.Remove(key)
+	}
 }
 
 // CurrentBytes returns the current memory usage of the cache in bytes.
@@ -208,6 +211,11 @@ func (l *LRUStore[K, V]) CurrentBytes() int64 {
 func (l *LRUStore[K, V]) Purge() {
 	l.mu.Lock()
 	defer l.executeEviction()
+	for _, key := range l.store.Keys() {
+		if val, ok := l.store.Peek(key); ok && val != nil {
+			val.evictionReason = EvictPurge
+		}
+	}
 	l.store.Purge()
 }
 

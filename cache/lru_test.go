@@ -27,7 +27,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store basic put and get", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{})
 		Expect(err).Should(BeNil())
 
 		store.Put("test", "test data", time.Second*2)
@@ -49,7 +51,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store delete key", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{})
 		Expect(err).Should(BeNil())
 
 		store.Put("test", "test data", time.Minute*2)
@@ -60,7 +64,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store with multiple keys", func() {
-		store, err := NewLRUStore[string, int](context.TODO(), Options[string, int]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, int](ctx, Options[string, int]{})
 		Expect(err).Should(BeNil())
 
 		for i := 0; i < 100; i++ {
@@ -77,7 +83,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("treats zero max size as unlimited", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{MaxSize: 0})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{MaxSize: 0})
 		Expect(err).Should(BeNil())
 
 		for i := 0; i < 1001; i++ {
@@ -92,7 +100,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("treats zero max bytes as unlimited", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{MaxBytes: 0, SizeOf: func(_ string, value string) int64 {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{MaxBytes: 0, SizeOf: func(_ string, value string) int64 {
 			return int64(len(value))
 		}})
 		Expect(err).Should(BeNil())
@@ -110,7 +120,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store overwrite value", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{})
 		Expect(err).Should(BeNil())
 
 		store.Put("rw", "v1", time.Second)
@@ -125,7 +137,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store rejects value exceeding max memory", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			MaxBytes: 1,
 			SizeOf: func(_ string, value string) int64 {
 				return int64(len(value))
@@ -140,7 +154,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store evicts oldest entry when memory is full", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			MaxBytes: 1,
 			SizeOf: func(_ string, value string) int64 {
 				return int64(len(value))
@@ -171,7 +187,9 @@ var _ = Describe("Test LRU cache utils", func() {
 			reason EvictionReason
 		}, 1)
 
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			MaxSize: 1,
 			OnEvict: func(key string, value string, reason EvictionReason) {
 				evicted <- struct {
@@ -201,7 +219,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("test lru cache store get on missing key", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{})
 		Expect(err).Should(BeNil())
 
 		value, found := store.Get("nonexistent")
@@ -224,7 +244,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("purge removes all entries", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			MaxBytes: 100,
 			SizeOf:   func(_ string, value string) int64 { return int64(len(value)) },
 		})
@@ -233,6 +255,7 @@ var _ = Describe("Test LRU cache utils", func() {
 		store.Put("a", "hello", 0)
 		store.Put("b", "world", 0)
 		store.Purge()
+		// placeholder-noop-keep-context
 
 		_, found := store.Get("a")
 		Expect(found).Should(BeFalse())
@@ -241,7 +264,9 @@ var _ = Describe("Test LRU cache utils", func() {
 	})
 
 	It("CurrentBytes tracks memory across puts, deletes, and purge", func() {
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			MaxBytes: 100,
 			SizeOf:   func(_ string, value string) int64 { return int64(len(value)) },
 		})
@@ -264,7 +289,9 @@ var _ = Describe("Test LRU cache utils", func() {
 
 	It("sweep goroutine evicts expired entries with EvictTTL reason", func() {
 		evicted := make(chan EvictionReason, 1)
-		store, err := NewLRUStore[string, string](context.TODO(), Options[string, string]{
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		store, err := NewLRUStore[string, string](ctx, Options[string, string]{
 			SweepInterval: 50 * time.Millisecond,
 			OnEvict: func(_ string, _ string, reason EvictionReason) {
 				select {
