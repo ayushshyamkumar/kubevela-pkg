@@ -167,7 +167,11 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 	defer l.executeEviction()
 	lc := NewLRUCache(value, cacheDuration)
 
-	if l.maximumMemory != 0 && l.sizeOf(key, value) > l.maximumMemory {
+	if l.sizeOf != nil {
+		lc.memorySize = l.sizeOf(key, value)
+	}
+
+	if l.maximumMemory != 0 && lc.memorySize > l.maximumMemory {
 		return
 	}
 
@@ -177,7 +181,6 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 	}
 
 	if l.maximumMemory != 0 {
-		lc.memorySize = l.sizeOf(key, value)
 		for atomic.LoadInt64(&l.currentMemory)+lc.memorySize > l.maximumMemory {
 			_, _, ok := l.store.RemoveOldest()
 			if !ok {
@@ -185,6 +188,10 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 				return
 			}
 		}
+	}
+
+	// Update the current memory usage after adding the new item to the cache if sizeOf is provided
+	if l.sizeOf != nil {
 		atomic.AddInt64(&l.currentMemory, lc.memorySize)
 	}
 
