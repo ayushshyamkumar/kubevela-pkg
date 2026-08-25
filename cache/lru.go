@@ -14,10 +14,6 @@ import (
 const (
 	// DefaultMemoryCacheSweepInterval is the default interval for sweeping expired items from the cache.
 	DefaultMemoryCacheSweepInterval = time.Minute * 5
-	// DefaultLRUCacheMemory for LRUCacheMemoryStore
-	DefaultLRUCacheMemory = 1024 * 1024 * 256 // 256MB
-	// DefaultLRUCacheSize for LRUCacheMemoryStore
-	DefaultLRUCacheSize = 1000
 )
 
 type lruCache[V any] struct {
@@ -33,14 +29,14 @@ type evictionEvent[K comparable, V any] struct {
 	value *lruCache[V]
 }
 
-// NewLRUCache new lru cache instance
+// NewLRUCache creates a new lruCache entry with the given value and TTL
 func NewLRUCache[V any](data V, cacheDuration time.Duration) *lruCache[V] {
 	lc := &lruCache[V]{data: data, cacheDuration: cacheDuration, startTime: time.Now(), evictionReason: EvictCapacity}
 
 	return lc
 }
 
-// isExpired whether the cache data expires
+// IsExpired checks if the cache entry's TTL has elapsed.
 func (l *lruCache[V]) IsExpired() bool {
 	if l.cacheDuration <= 0 {
 		return false
@@ -190,7 +186,7 @@ func (l *LRUStore[K, V]) Put(key K, value V, cacheDuration time.Duration) {
 		}
 	}
 
-	// Update the current memory usage after adding the new item to the cache if sizeOf is provided
+	// track bytes whenever sizeOf is provided, even if maximumMemory is 0.
 	if l.sizeOf != nil {
 		atomic.AddInt64(&l.currentMemory, lc.memorySize)
 	}

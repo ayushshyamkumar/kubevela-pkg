@@ -255,7 +255,6 @@ var _ = Describe("Test LRU cache utils", func() {
 		store.Put("a", "hello", 0)
 		store.Put("b", "world", 0)
 		store.Purge()
-		// placeholder-noop-keep-context
 
 		_, found := store.Get("a")
 		Expect(found).Should(BeFalse())
